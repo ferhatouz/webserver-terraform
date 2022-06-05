@@ -242,7 +242,7 @@ resource "aws_security_group" "database-sg" {
     Name = "Database-SG"
   }
 }
-#Create  a Load balancer
+#Create  a Load balancer for external
 resource "aws_lb" "external-elb" {
   name               = "External-LB"
   internal           = false
@@ -260,12 +260,10 @@ resource "aws_lb_target_group" "external-elb" {
 #Create  a Load balancer target group attachment 
 resource "aws_lb_target_group_attachment" "external-elb1" {
   target_group_arn = aws_lb_target_group.external-elb.arn
-  target_id        = aws_instance.webserver1.id
+   target_id        = aws_instance.webserver2.id
   port             = 80
 
-  depends_on = [
-    aws_instance.webserver1,
-  ]
+  depends_on = [aws_instance.webserver1, ]
 }
 
 resource "aws_lb_target_group_attachment" "external-elb2" {
@@ -273,9 +271,7 @@ resource "aws_lb_target_group_attachment" "external-elb2" {
   target_id        = aws_instance.webserver2.id
   port             = 80
 
-  depends_on = [
-    aws_instance.webserver2,
-  ]
+  depends_on = [aws_instance.webserver2,]
 }
 
 resource "aws_lb_listener" "external-elb" {
@@ -288,7 +284,70 @@ resource "aws_lb_listener" "external-elb" {
     target_group_arn = aws_lb_target_group.external-elb.arn
   }
 }
+#Create Network Load Balancer for internal
+resource "aws_lb" "internal-lb" {
+  name               = "internal"
+  load_balancer_type = "network"
 
+  subnet_mapping {
+    subnet_id            = aws_subnet.app-subnet-1.id
+    private_ipv4_address = "10.0.1.15"
+  }
+
+  subnet_mapping {
+    subnet_id            = aws_subnet.app-subnet-1.id
+    private_ipv4_address = "10.0.2.15"
+  }
+}
+#Create a Auto-Scaling Template for web
+resource "aws_launch_configuration" "web" {
+  name_prefix     = "web-launch"
+  image_id        = "ami-0022f774911c1d690"
+  instance_type   = "t2.micro"
+  user_data       = file("apache.sh")
+  security_groups = [aws_security_group.web-sg.id]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+#Create a Auto-Scaling Template for App
+resource "aws_launch_configuration" "app" {
+  name_prefix     = "app-launch"
+  image_id        = "ami-0022f774911c1d690"
+  instance_type   = "t2.micro"
+  security_groups = [aws_security_group.webserver-sg.id]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+#Set a Auto-Scaling-Group for web
+resource "aws_autoscaling_group" "web-asg" {
+  min_size             = 2
+  max_size             = 5
+  desired_capacity     = 2
+  launch_configuration = aws_launch_configuration.web.name
+  vpc_zone_identifier  = [aws_subnet.web-subnet-1.id, aws_subnet.web-subnet-1.id]
+}
+#Attach auto-scaling-group to LB for web
+resource "aws_autoscaling_attachment" "asg_attachment_external" {
+  autoscaling_group_name = aws_autoscaling_group.web-asg.id
+  elb                    = aws_lb.external-elb.id
+}
+#Set a Auto-Scaling-Group for app
+resource "aws_autoscaling_group" "app-asg" {
+  min_size             = 2
+  max_size             = 5
+  desired_capacity     = 2
+  launch_configuration = aws_launch_configuration.web.name
+  vpc_zone_identifier  = [aws_subnet.app-subnet-1.id, aws_subnet.app-subnet-2.id]
+}
+#Attach auto-scaling-group to LB for app
+resource "aws_autoscaling_attachment" "asg_attachment_internal" {
+  autoscaling_group_name = aws_autoscaling_group.app-asg.id
+  elb                    = aws_lb.internal-lb.id
+}
 #Create Database Instance
 
 resource "aws_db_instance" "default" {
